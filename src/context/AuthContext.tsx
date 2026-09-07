@@ -3,16 +3,21 @@ import {
   User,
   GoogleAuthProvider,
   signInWithPopup,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  updateProfile,
   signOut,
   onAuthStateChanged,
 } from 'firebase/auth';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
-import { auth, db, handleFirestoreError, OperationType } from '../firebase/config';
+import { auth, db } from '../firebase/config';
 
 interface AuthContextType {
   user: User | null;
   loading: boolean;
   signInWithGoogle: () => Promise<void>;
+  signInWithEmail: (email: string, password: string) => Promise<void>;
+  signUpWithEmail: (email: string, password: string, displayName?: string) => Promise<void>;
   signOutUser: () => Promise<void>;
   authError: string | null;
   clearAuthError: () => void;
@@ -51,6 +56,33 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return () => unsubscribe();
   }, []);
 
+  const formatAuthError = (err: unknown): string => {
+    if (err instanceof Error) {
+      const msg = err.message;
+      if (msg.includes('auth/unauthorized-domain')) {
+        const currentDomain = window.location.hostname;
+        return `โดเมน "${currentDomain}" ยังไม่ได้รับอนุญาตใน Firebase Console โปรดเพิ่ม "${currentDomain}" ที่ Firebase Console > Authentication > Settings > Authorized domains`;
+      }
+      if (msg.includes('auth/invalid-credential') || msg.includes('auth/wrong-password') || msg.includes('auth/user-not-found')) {
+        return 'อีเมลหรือรหัสผ่านไม่ถูกต้อง';
+      }
+      if (msg.includes('auth/email-already-in-use')) {
+        return 'อีเมลนี้ถูกลงทะเบียนไว้แล้ว โปรดเลือกเข้าสู่ระบบ';
+      }
+      if (msg.includes('auth/weak-password')) {
+        return 'รหัสผ่านต้องมีความยาวอย่างน้อย 6 ตัวอักษร';
+      }
+      if (msg.includes('auth/invalid-email')) {
+        return 'รูปแบบอีเมลไม่ถูกต้อง';
+      }
+      if (msg.includes('auth/operation-not-allowed')) {
+        return 'ระบบอีเมลยังไม่ได้เปิดใช้งานใน Firebase Authentication (Sign-in method > Email/Password)';
+      }
+      return msg;
+    }
+    return 'เกิดข้อผิดพลาดในการตรวจสอบสิทธิ์';
+  };
+
   const signInWithGoogle = async () => {
     setAuthError(null);
     try {
@@ -59,8 +91,40 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       await signInWithPopup(auth, provider);
     } catch (err: unknown) {
       console.error('Google Sign In Error:', err);
-      const message = err instanceof Error ? err.message : 'เกิดข้อผิดพลาดในการเข้าสู่ระบบ';
-      setAuthError(message);
+      setAuthError(formatAuthError(err));
+      throw err;
+    }
+  };
+
+  const signInWithEmail = async (email: string, password: string) => {
+    setAuthError(null);
+    try {
+      await signInWithEmailAndPassword(auth, email.trim(), password);
+    } catch (err: unknown) {
+      console.error('Email Sign In Error:', err);
+      setAuthError(formatAuthError(err));
+      throw err;
+    }
+  };
+
+  const signUpWithEmail = async (email: string, password: string, displayName?: string) => {
+    setAuthError(null);
+    try {
+      const res = await createUserWithEmailAndPassword(auth, email.trim(), password);
+      if (displayName && displayName.trim() && res.user) {
+        await updateProfile(res.user, { displayName: displayName.trim() });
+        const userRef = doc(db, 'users', res.user.uid);
+        await setDoc(userRef, {
+          id: res.user.uid,
+          email: res.user.email || '',
+          displayName: displayName.trim(),
+          photoURL: res.user.photoURL || '',
+          createdAt: new Date().toISOString(),
+        }, { merge: true });
+      }
+    } catch (err: unknown) {
+      console.error('Email Sign Up Error:', err);
+      setAuthError(formatAuthError(err));
       throw err;
     }
   };
@@ -82,6 +146,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         user,
         loading,
         signInWithGoogle,
+        signInWithEmail,
+        signUpWithEmail,
         signOutUser,
         authError,
         clearAuthError,
